@@ -1,0 +1,15 @@
+pandas
+numpy
+seaborn
+matplotlib
+plotly
+scipy
+setuptools==80.9.0
+great_expectations==1.23.1
+fg-data-profiling[notebook]==4.20.0
+ipykernel
+ipywidgets
+ipython-sql==0.5.0
+sqlalchemy
+pymysql
+psycopg2-binary
