@@ -1,0 +1,122 @@
+# ==============================================================================
+# Project: Happiness ML Streaming Pipeline
+# Description: Infrastructure orchestration (MySQL, Grafana, Kafka in KRaft mode)
+# ==============================================================================
+name: happiness-ml
+
+services:
+  # ------------------------------------------------------------------------------
+  # 1. DATABASE: MySQL
+  # Stores raw events, dimensions, and ML predictions.
+  # Automatically executes the schema.sql on the first run.
+  # ------------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Mount the schema to initialize the database on the first run
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-warehouse.sql:ro
+    healthcheck:
+      # Wait until MySQL is ready to accept connections
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER}", "-p${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ------------------------------------------------------------------------------
+  # 2. DASHBOARD: Grafana
+  # Connects to MySQL to visualize real-time ML predictions.
+  # Access at http://localhost:3000 (user: admin; password is set in .env)
+  # ------------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3002:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}"
+      GF_DASHBOARDS_DEFAULT_REFRESH: "1s"
+    depends_on:
+      - mysql
+  # ------------------------------------------------------------------------------
+  # 3. KAFKA STORAGE INITIALIZER
+  # Ensures the Kafka data directory has the correct permissions.
+  # ------------------------------------------------------------------------------
+  kafka-storage-init:
+    image: apache/kafka:4.4.0
+    user: "0:0" # Run as root to allow chown
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown 1000:1000 /data"]
+    volumes:
+      - kafka-data:/data
+
+  # ------------------------------------------------------------------------------
+  # 4. KAFKA BROKER
+  # Apache Kafka running in KRaft mode (no Zookeeper required).
+  # Configured for local development with 1 broker.
+  # ------------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:4.4.0
+    hostname: kafka
+    depends_on:
+      kafka-storage-init:
+        condition: service_completed_successfully
+    ports:
+      - "9092:9092" # External port for Python scripts to connect
+    environment:
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      # Wait until the Kafka broker is fully operational
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:19092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # ------------------------------------------------------------------------------
+  # 5. KAFKA TOPIC INITIALIZER
+  # Creates the required 'happiness-events' topic upon startup.
+  # Requirements: 3 partitions, replication factor 1.
+  # ------------------------------------------------------------------------------
+  kafka-init:
+    image: apache/kafka:4.4.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic happiness-events --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --describe --topic happiness-events
+
+# ==============================================================================
+# VOLUMES
+# Persistent storage for database and Kafka data.
+# ==============================================================================
+volumes:
+  kafka-data:
+  mysql-data:

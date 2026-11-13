@@ -1,0 +1,8 @@
+docker compose --env-file .env exec -T mysql sh -ec 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -u root "$MYSQL_DATABASE"' <<'SQL'
+SET FOREIGN_KEY_CHECKS = 0;
+TRUNCATE TABLE fact_predictions;
+TRUNCATE TABLE raw_happiness_events;
+TRUNCATE TABLE dim_country;
+TRUNCATE TABLE dim_date;
+SET FOREIGN_KEY_CHECKS = 1;
+SQL
